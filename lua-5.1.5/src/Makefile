@@ -59,10 +59,10 @@ $(LUA_SO): $(CORE_O) $(LIB_O)
 	$(CC) -o $@ -shared $(CFLAGS) $(MYLDFLAGS) $(CORE_O) $(LIB_O) $(LIBS)
 
 $(LUA_T): $(LUA_O) $(LUA_A)
-	$(CC) -o $@ $(CFLAGS) $(MYLDFLAGS) $(LUA_O) $(LUA_A) $(LIBS)
+	$(CC) -o $@ $(MYLDFLAGS) $(LUA_O) $(LUA_A) $(LIBS)
 
 $(LUAC_T): $(LUAC_O) $(LUA_A)
-	$(CC) -o $@ $(CFLAGS) $(MYLDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
+	$(CC) -o $@ $(MYLDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
 
 clean:
 	$(RM) $(ALL_T) $(ALL_O)
