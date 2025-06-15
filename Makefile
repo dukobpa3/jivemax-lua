@@ -18,14 +18,14 @@
 # selected Lua implementation's Makefile.
 #
 
+# --- Configuration ---
 # Use LuaJIT by default (1 = yes, 0 = no)
 USE_LUAJIT ?= 1
 
 # Default platform if not specified from the top-level build.
-PLAT ?= generic
+PLAT ?= linux
 
 # --- Logic ---
-
 # Determine the source directory based on the switch
 ifeq ($(USE_LUAJIT), 1)
 	LUA_SRC_DIR := luajit
