@@ -1,60 +1,65 @@
-#
+################################################################################
 # Main Makefile for jivemax-lua build
 #
-# This Makefile acts as a dispatcher to build either LuaJIT or a
-# patched vanilla Lua 5.1.5 with BitOp.
+# This Makefile dispatches build commands to either LuaJIT or a patched
+# vanilla Lua 5.1.5, based on the USE_LUAJIT switch.
 #
-# --- Configuration ---
-#
-# USE_LUAJIT     - Set to 0 to build vanilla Lua instead of LuaJIT.
-#                  Default: 1 (builds LuaJIT).
-#
-# --- Usage ---
-#
-# make [target]                - Builds LuaJIT.
-# make [target] USE_LUAJIT=0   - Builds vanilla Lua.
-#
-# Any target (e.g., all, clean, install, linux) is forwarded to the
-# selected Lua implementation's Makefile.
-#
+# It is designed to be called from the main project's Makefile and inherits
+# environment variables like PREFIX, CFLAGS, etc.
+################################################################################
 
 # --- Configuration ---
-# Use LuaJIT by default (1 = yes, 0 = no)
+# USE_LUAJIT: Set to 0 for vanilla Lua, 1 for LuaJIT. Default is 1.
 USE_LUAJIT ?= 1
 
-# Default platform if not specified from the top-level build.
+# Default platform if not specified.
 PLAT ?= linux
 
 # --- Logic ---
-# Determine the source directory based on the switch
+# Determine the source directory based on USE_LUAJIT.
 ifeq ($(USE_LUAJIT), 1)
 	LUA_SRC_DIR := luajit
 else
 	LUA_SRC_DIR := lua-5.1.5
 endif
 
-# Export all variables (like PREFIX, CFLAGS, etc.) to sub-makefiles.
+# Export variables to sub-makefiles.
 export
 
-# --- Targets ---
+# --- Main Targets ---
 
-# Provide a specific test target for vanilla lua, as it has a custom test.
+# 'all' is the main build and install target.
+.PHONY: all
+all:
+ifeq ($(USE_LUAJIT), 1)
+	@echo "--- Building and installing LuaJIT ---"
+	@$(MAKE) -C $(LUA_SRC_DIR)
+	@$(MAKE) -C $(LUA_SRC_DIR) install
+else
+	@echo "--- Building and installing vanilla Lua ---"
+	@$(MAKE) -C $(LUA_SRC_DIR) $(PLAT) install
+endif
+
+# 'install' is an alias for 'all'.
+.PHONY: install
+install: all
+
+.PHONY: clean
+clean:
+	@echo "--- Cleaning $(LUA_SRC_DIR) ---"
+	@$(MAKE) -C $(LUA_SRC_DIR) clean
+
+# --- Test Target ---
+# Explicit test logic, does not rely on a generic forwarder.
 .PHONY: test
 test:
 ifeq ($(USE_LUAJIT), 0)
-	@echo "--- Testing Vanilla Lua 5.1.5 with BitOp integration for $(PLAT) ---"
-	@# First, we need to build it to be able to test it for the target platform.
+	@echo "--- Building vanilla Lua for testing ---"
 	@$(MAKE) -C $(LUA_SRC_DIR) $(PLAT)
+	@echo "--- Testing Vanilla Lua 5.1.5 with BitOp integration ---"
 	@./$(LUA_SRC_DIR)/src/lua ./$(LUA_SRC_DIR)/test/bittest.lua
 	@echo "--- Test successful! ---"
 else
-	@echo "--- Forwarding target '$@' to $(LUA_SRC_DIR) ---"
-	@$(MAKE) -C $(LUA_SRC_DIR) $@
+	@echo "--- Running tests for LuaJIT ---"
+	@$(MAKE) -C $(LUA_SRC_DIR) test
 endif
-
-# A catch-all phony target that forwards any command to the selected
-# subdirectory's Makefile. This must come after 'test' to avoid catching it.
-.PHONY: %
-%:
-	@echo "--- Forwarding target '$@' to $(LUA_SRC_DIR) ---"
-	@$(MAKE) -C $(LUA_SRC_DIR) $@
