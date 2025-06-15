@@ -2,7 +2,7 @@
 ** Lua BitOp -- a bit operations library for Lua 5.1/5.2.
 ** http://bitop.luajit.org/
 **
-** Copyright (C) 2008-2012 Mike Pall. All rights reserved.
+** Copyright (C) 2008-2025 Mike Pall. All rights reserved.
 **
 ** Permission is hereby granted, free of charge, to any person obtaining
 ** a copy of this software and associated documentation files (the
@@ -26,20 +26,13 @@
 ** [ MIT license: http://www.opensource.org/licenses/mit-license.php ]
 */
 
-#define LUA_BITOP_VERSION	"1.0.2"
+#define LUA_BITOP_VERSION	"1.0.3"
 
 #define LUA_LIB
 #include "lua.h"
 #include "lauxlib.h"
 
-#ifdef _MSC_VER
-/* MSVC is stuck in the last century and doesn't have C99's stdint.h. */
-typedef __int32 int32_t;
-typedef unsigned __int32 uint32_t;
-typedef unsigned __int64 uint64_t;
-#else
 #include <stdint.h>
-#endif
 
 typedef int32_t SBits;
 typedef uint32_t UBits;
@@ -127,11 +120,11 @@ static int bit_bswap(lua_State *L)
 static int bit_tohex(lua_State *L)
 {
   UBits b = barg(L, 1);
-  SBits n = lua_isnone(L, 2) ? 8 : (SBits)barg(L, 2);
+  UBits n = lua_isnone(L, 2) ? 8 : barg(L, 2);
   const char *hexdigits = "0123456789abcdef";
   char buf[8];
   int i;
-  if (n < 0) { n = -n; hexdigits = "0123456789ABCDEF"; }
+  if ((SBits)n < 0) { n = ~n+1; hexdigits = "0123456789ABCDEF"; }
   if (n > 8) n = 8;
   for (i = (int)n; --i >= 0; ) { buf[i] = hexdigits[b & 15]; b >>= 4; }
   lua_pushlstring(L, buf, (size_t)n);
@@ -167,11 +160,22 @@ LUALIB_API int luaopen_bit(lua_State *L)
   b = barg(L, -1);
   if (b != (UBits)1437217655L || BAD_SAR) {  /* Perform a simple self-test. */
     const char *msg = "compiled with incompatible luaconf.h";
-    if (b != (UBits)1437217655L) msg = "number type has more than 32 bits";
-    luaL_error(L, msg);
+#ifdef LUA_NUMBER_DOUBLE
+#ifdef _WIN32
+    if (b == (UBits)1610612736L)
+      msg = "use D3DCREATE_FPU_PRESERVE with DirectX";
+#endif
+    if (b == (UBits)1127743488L)
+      msg = "not compiled with SWAPPED_DOUBLE";
+#endif
+    if (BAD_SAR)
+      msg = "arithmetic right-shift broken";
+    luaL_error(L, "bit library self-test failed (%s)", msg);
   }
-  luaL_register(L, LUA_BITLIBNAME, bit_funcs);
-  lua_pushstring(L, LUA_BITOP_VERSION);
-  lua_setfield(L, -2, "_VERSION");
+#if LUA_VERSION_NUM < 502
+  luaL_register(L, "bit", bit_funcs);
+#else
+  luaL_newlib(L, bit_funcs);
+#endif
   return 1;
 } 
