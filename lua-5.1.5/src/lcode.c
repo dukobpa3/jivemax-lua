@@ -231,12 +231,20 @@ static int addk (FuncState *fs, TValue *k, TValue *v) {
   TValue *idx = luaH_set(L, fs->h, k);
   Proto *f = fs->f;
   int oldsize = f->sizek;
+#ifdef LUA_TINT
+  lua_assert( !ttisnumber_raw(idx) );
+  if (ttisinteger(idx)) {
+    lua_assert(luaO_rawequalObj(&fs->f->k[ (int) ivalue(idx) ], v));
+    return ivalue(idx);
+  }
+#else
   if (ttisnumber(idx)) {
     lua_assert(luaO_rawequalObj(&fs->f->k[cast_int(nvalue(idx))], v));
     return cast_int(nvalue(idx));
   }
+#endif
   else {  /* constant not found; create a new entry */
-    setnvalue(idx, cast_num(fs->nk));
+    setivalue(idx, fs->nk);
     luaM_growvector(L, f->k, fs->nk, f->sizek, TValue,
                     MAXARG_Bx, "constant table overflow");
     while (oldsize < f->sizek) setnilvalue(&f->k[oldsize++]);
@@ -260,6 +268,14 @@ int luaK_numberK (FuncState *fs, lua_Number r) {
   return addk(fs, &o, &o);
 }
 
+
+#ifdef LUA_TINT
+ int luaK_integerK (FuncState *fs, lua_Integer r) {
+  TValue o;
+  setivalue(&o, r);
+  return addk(fs, &o, &o);
+ }
+#endif
 
 static int boolK (FuncState *fs, int b) {
   TValue o;
@@ -356,9 +372,16 @@ static void discharge2reg (FuncState *fs, expdesc *e, int reg) {
       break;
     }
     case VKNUM: {
+      /* LUA_TINT: TBD: is using the .nval directly okay? */
       luaK_codeABx(fs, OP_LOADK, reg, luaK_numberK(fs, e->u.nval));
       break;
     }
+#ifdef LUA_TINT
+    case VKINT: {
+      luaK_codeABx(fs, OP_LOADK, reg, luaK_integerK(fs, e->u.ival));
+      break;
+    }
+#endif
     case VRELOCABLE: {
       Instruction *pc = &getcode(fs, e);
       SETARG_A(*pc, reg);
@@ -449,6 +472,7 @@ int luaK_exp2RK (FuncState *fs, expdesc *e) {
     case VFALSE:
     case VNIL: {
       if (fs->nk <= MAXINDEXRK) {  /* constant fit in RK operand? */
+/* LUA_TINT: TBD: is using the .nval directly okay? */
         e->u.s.info = (e->k == VNIL)  ? nilK(fs) :
                       (e->k == VKNUM) ? luaK_numberK(fs, e->u.nval) :
                                         boolK(fs, (e->k == VTRUE));
@@ -627,6 +651,7 @@ void luaK_indexed (FuncState *fs, expdesc *t, expdesc *k) {
 static int constfolding (OpCode op, expdesc *e1, expdesc *e2) {
   lua_Number v1, v2, r;
   if (!isnumeral(e1) || !isnumeral(e2)) return 0;
+/* LUA_TINT: TBD: is using the .nval directly okay? */
   v1 = e1->u.nval;
   v2 = e2->u.nval;
   switch (op) {
@@ -642,9 +667,21 @@ static int constfolding (OpCode op, expdesc *e1, expdesc *e2) {
     case OP_POW: r = luai_numpow(v1, v2); break;
     case OP_UNM: r = luai_numunm(v1); break;
     case OP_LEN: return 0;  /* no constant folding for 'len' */
+#if defined(LUA_BITWISE_OPERATORS)
+    case OP_BOR: luai_logor(r, v1, v2); break;
+    case OP_BAND: luai_logand(r, v1, v2); break;
+    case OP_BXOR: luai_logxor(r, v1, v2);  break;
+    case OP_BRSHFT: luai_logrshft(r, v1, v2); break;
+    case OP_BLSHFT: luai_loglshft(r, v1, v2); break;
+    case OP_BNOT: luai_lognot(r, v1); break;
+    case OP_INTDIV:
+      if (v2 == 0) return 0;  /* do not attempt to divide by 0 */
+      r = luai_numintdiv(v1, v2); break;
+#endif
     default: lua_assert(0); r = 0; break;
   }
   if (luai_numisnan(r)) return 0;  /* do not attempt to produce NaN */
+/* LUA_TINT: TBD: is using the .nval directly okay? */
   e1->u.nval = r;
   return 1;
 }
@@ -654,7 +691,11 @@ static void codearith (FuncState *fs, OpCode op, expdesc *e1, expdesc *e2) {
   if (constfolding(op, e1, e2))
     return;
   else {
+#if defined(LUA_BITWISE_OPERATORS)
+    int o2 = (op != OP_UNM && op != OP_LEN && op != OP_BNOT) ? luaK_exp2RK(fs, e2) : 0;
+#else
     int o2 = (op != OP_UNM && op != OP_LEN) ? luaK_exp2RK(fs, e2) : 0;
+#endif
     int o1 = luaK_exp2RK(fs, e1);
     if (o1 > o2) {
       freeexp(fs, e1);
@@ -690,6 +731,14 @@ void luaK_prefix (FuncState *fs, UnOpr op, expdesc *e) {
   expdesc e2;
   e2.t = e2.f = NO_JUMP; e2.k = VKNUM; e2.u.nval = 0;
   switch (op) {
+#if defined(LUA_BITWISE_OPERATORS)
+    case OPR_BNOT: {
+      if (e->k == VK)
+        luaK_exp2anyreg(fs, e);  /* cannot operate on non-numeric constants */
+      codearith(fs, OP_BNOT, e, &e2);
+      break;
+    }
+#endif
     case OPR_MINUS: {
       if (!isnumeral(e))
         luaK_exp2anyreg(fs, e);  /* cannot operate on non-numeric constants */
@@ -770,6 +819,14 @@ void luaK_posfix (FuncState *fs, BinOpr op, expdesc *e1, expdesc *e2) {
     case OPR_DIV: codearith(fs, OP_DIV, e1, e2); break;
     case OPR_MOD: codearith(fs, OP_MOD, e1, e2); break;
     case OPR_POW: codearith(fs, OP_POW, e1, e2); break;
+#if defined(LUA_BITWISE_OPERATORS)
+    case OPR_BOR: codearith(fs, OP_BOR, e1, e2); break;
+    case OPR_BAND: codearith(fs, OP_BAND, e1, e2); break;
+    case OPR_BXOR: codearith(fs, OP_BXOR, e1, e2); break;
+    case OPR_BLSHFT: codearith(fs, OP_BLSHFT, e1, e2); break;
+    case OPR_BRSHFT: codearith(fs, OP_BRSHFT, e1, e2); break;
+    case OPR_INTDIV: codearith(fs, OP_INTDIV, e1, e2); break;
+#endif
     case OPR_EQ: codecomp(fs, OP_EQ, 1, e1, e2); break;
     case OPR_NE: codecomp(fs, OP_EQ, 0, e1, e2); break;
     case OPR_LT: codecomp(fs, OP_LT, 1, e1, e2); break;

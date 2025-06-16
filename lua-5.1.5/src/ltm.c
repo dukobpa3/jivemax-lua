@@ -19,11 +19,10 @@
 #include "ltm.h"
 
 
-
 const char *const luaT_typenames[] = {
-  "nil", "boolean", "userdata", "number",
-  "string", "table", "function", "userdata", "thread",
-  "proto", "upval"
+    "nil", "boolean", "userdata", "number",
+    "string", "table", "function", "userdata", "thread",
+    "proto", "upval"
 };
 
 
@@ -34,6 +33,9 @@ void luaT_init (lua_State *L) {
     "__add", "__sub", "__mul", "__div", "__mod",
     "__pow", "__unm", "__len", "__lt", "__le",
     "__concat", "__call"
+#if defined(LUA_BITWISE_OPERATORS)
+    ,"__or", "__and", "__xor", "__shl", "__shr", "__not", "__intdiv"
+#endif
   };
   int i;
   for (i=0; i<TM_N; i++) {
@@ -68,7 +70,7 @@ const TValue *luaT_gettmbyobj (lua_State *L, const TValue *o, TMS event) {
       mt = uvalue(o)->metatable;
       break;
     default:
-      mt = G(L)->mt[ttype(o)];
+      mt = G(L)->mt[ttype2(o)];
   }
   return (mt ? luaH_getstr(mt, G(L)->tmname[event]) : luaO_nilobject);
 }

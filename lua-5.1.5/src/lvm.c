@@ -32,15 +32,130 @@
 #define MAXTAGLOOP	100
 
 
+/* Functions for finding out, when integer operations remain in range
+ * (and doing them).
+ */
+#ifdef LUA_TINT
+static int try_addint( StkId ra, lua_Integer ib, lua_Integer ic ) {
+  lua_Integer v= ib+ic; /* may overflow */
+  if (ib>0 && ic>0)      { if (v < 0) return 0; /*overflow, use floats*/ }
+  else if (ib<0 && ic<0) { if (v >= 0) return 0; }
+  setivalue(ra, v);
+  return 1;
+}
+static int try_subint( StkId ra, lua_Integer ib, lua_Integer ic ) {
+  lua_Integer v= ib-ic; /* may overflow */
+  if (ib>=0 && ic<0)     { if (v < 0) return 0; /*overflow, use floats*/ }
+  else if (ib<0 && ic>0) { if (v >= 0) return 0; }
+  setivalue(ra, v);
+  return 1;
+}
+static int try_mulint( StkId ra, lua_Integer ib, lua_Integer ic ) {
+  /* If either is -2^31, multiply with anything but 0,1 would be out or range.
+   * 0,1 will go through the float route, but will fall back to integers
+   * eventually (no accuracy lost, so no need to check).
+   * Also, anything causing -2^31 result (s.a. -2*2^30) will take the float
+   * route, but later fall back to integer without accuracy loss. :)
+   */
+  if (ib!=LUA_INTEGER_MIN && ic!=LUA_INTEGER_MIN) {
+    lua_Integer b= labs(ib), c= labs(ic);
+    if ( (ib==0) || (LUA_INTEGER_MAX/b > c) ||
+                   ((LUA_INTEGER_MAX/b == c) && (LUA_INTEGER_MAX%b == 0)) ) {
+      setivalue(ra, ib*ic);  /* no overflow */
+      return 1;
+    }
+  }
+  return 0;
+}
+static int try_divint( StkId ra, lua_Integer ib, lua_Integer ic ) {
+  /* -2^31/N: leave to float side (either the division causes non-integer results,
+   *          or fallback to integer through float calculation, but without accuracy
+   *          lost (N=2,4,8,..,256 and N=2^30,2^29,..2^23).
+   * N/-2^31: leave to float side (always non-integer results or 0 or +1)
+   * N/0:     leave to float side, to give an error
+   *
+   * Note: We _can_ use ANSI C mod here, even on negative values, since
+   *       we only test for == 0 (the sign would be implementation dependent).
+   */
+  if (ic!=0 && ib!=LUA_INTEGER_MIN && ic!=LUA_INTEGER_MIN) {
+    if (ib%ic == 0) { setivalue(ra, ib/ic); return 1; }
+  }
+  return 0;
+}
+static int try_modint( StkId ra, lua_Integer ib, lua_Integer ic ) {
+  if (ic!=0) {
+    /* ANSI C can be trusted when b%c==0, or when values are non-negative. 
+     * b - (floor(b/c) * c)
+     *   -->
+     * + +: b - (b/c) * c (b % c can be used)
+     * - -: b - (b/c) * c (b % c could work, but not defined by ANSI C)
+     * 0 -: b - (b/c) * c (=0, b % c could work, but not defined by ANSI C)
+     * - +: b - (b/c-1) * c (when b!=-c)
+     * + -: b - (b/c-1) * c (when b!=-c)
+     *
+     * o MIN%MIN ends up 0, via overflow in calcs but that does not matter.
+     * o MIN%MAX ends up MAX-1 (and other such numbers), also after overflow,
+     *   but that does not matter, results do.
+     */
+    lua_Integer v= ib % ic;
+    if ( v!=0 && (ib<0 || ic<0) ) {
+      v= ib - ((ib/ic) - ((ib<=0 && ic<0) ? 0:1)) * ic;
+    }      
+    /* Result should always have same sign as 2nd argument. (PIL2) */
+    lua_assert( (v<0) ? (ic<0) : (v>0) ? (ic>0) : 1 );
+    setivalue(ra, v);
+    return 1;
+  }
+  return 0;  /* let float side return NaN */
+}
+static int try_powint( StkId ra, lua_Integer ib, lua_Integer ic ) {
+  /* Fallback to floats would not hurt (no accuracy lost) but we can do
+   * some common cases (2^N where N=[0..30]) for speed.
+   */
+  if (ib==2 && ic>=0 && ic <= 30) {
+    setivalue(ra, 1<<ic);   /* 1,2,4,...2^30 */
+    return 1;
+  }
+  return 0;
+}
+static int try_unmint( StkId ra, lua_Integer ib ) {
+  /* Negating -2^31 leaves the range. */
+  if ( ib != LUA_INTEGER_MIN )  
+    { setivalue(ra,-ib); return 1; }
+  return 0;
+}
+#endif /* LUA_TINT */
+
+
 const TValue *luaV_tonumber (const TValue *obj, TValue *n) {
   lua_Number num;
   if (ttisnumber(obj)) return obj;
+
+#ifdef LUA_TINT
+  /* Reason to handle integers differently is not only speed, but accuracy
+     as well. We don't want to lose LSB's because of interim casts.
+  */
+  if (ttisstring(obj)) {
+    lua_Integer i;
+    if (luaO_str2i(svalue(obj), &i)) {
+      setivalue(n,i);
+      return n;
+    }
+    /* Now, DO NOT use 'setnvalue_fast()' here, since the number might be
+     * i.e. "1.0", which needs to be stored as an integer.
+     */
+    if (luaO_str2d(svalue(obj), &num)) {
+      setnvalue(n,num);
+      return n;
+    }
+  }
+#else
   if (ttisstring(obj) && luaO_str2d(svalue(obj), &num)) {
     setnvalue(n, num);
     return n;
   }
-  else
-    return NULL;
+#endif
+  return NULL;
 }
 
 
@@ -49,8 +164,23 @@ int luaV_tostring (lua_State *L, StkId obj) {
     return 0;
   else {
     char s[LUAI_MAXNUMBER2STR];
+#ifdef LUA_TINT
+  /* Reason to handle integers differently is not only speed,
+     but accuracy as well. We want to make any integer tostring()
+     without roundings, at all (only [-0..9] used).
+  */
+    if (ttisinteger(obj)) {
+      lua_Integer i = ivalue(obj);
+      lua_integer2str(s, i);
+    }
+    else {  
+      lua_Number n = nvalue_fast(obj);
+      lua_number2str(s, n);
+    }
+#else
     lua_Number n = nvalue(obj);
     lua_number2str(s, n);
+#endif
     setsvalue2s(L, obj, luaS_new(L, s));
     return 1;
   }
@@ -224,22 +354,63 @@ static int l_strcmp (const TString *ls, const TString *rs) {
 
 int luaV_lessthan (lua_State *L, const TValue *l, const TValue *r) {
   int res;
-  if (ttype(l) != ttype(r))
+#ifdef LUA_TINT
+  int tl,tr;
+#endif
+  if (ttype2(l) != ttype2(r))
     return luaG_ordererror(L, l, r);
+#ifdef LUA_TINT
+  tl= ttype(l), tr= ttype(r);
+  if (tl==tr) {  /* clear arithmetics */
+    switch(tl) {
+      case LUA_TINT:      return ivalue(l) < ivalue(r);
+      case LUA_TNUMBER:   return luai_numlt(nvalue_fast(l), nvalue_fast(r));
+      case LUA_TSTRING:   return l_strcmp(rawtsvalue(l), rawtsvalue(r)) < 0;
+    }
+  } else if (tl==LUA_TINT) {  /* l:int, r:num */
+      return luai_numlt( cast_num(ivalue(l)), nvalue_fast(r) );
+  } else if (tl==LUA_TNUMBER) {  /* l:num, r:int */
+      return luai_numlt( nvalue_fast(l), cast_num(ivalue(r)) );
+  }
+  if ((res = call_orderTM(L, l, r, TM_LT)) != -1)
+    return res;
+#else
   else if (ttisnumber(l))
     return luai_numlt(nvalue(l), nvalue(r));
   else if (ttisstring(l))
     return l_strcmp(rawtsvalue(l), rawtsvalue(r)) < 0;
   else if ((res = call_orderTM(L, l, r, TM_LT)) != -1)
     return res;
+#endif
   return luaG_ordererror(L, l, r);
 }
 
 
 static int lessequal (lua_State *L, const TValue *l, const TValue *r) {
   int res;
-  if (ttype(l) != ttype(r))
+#ifdef LUA_TINT
+  int tl, tr;
+#endif
+  if (ttype2(l) != ttype2(r))
     return luaG_ordererror(L, l, r);
+#ifdef LUA_TINT
+  tl= ttype(l), tr= ttype(r);
+  if (tl==tr) {  /* clear arithmetics */
+    switch(tl) {
+      case LUA_TINT:      return ivalue(l) <= ivalue(r);
+      case LUA_TNUMBER:   return luai_numle(nvalue_fast(l), nvalue_fast(r));
+      case LUA_TSTRING:   return l_strcmp(rawtsvalue(l), rawtsvalue(r)) <= 0;
+    }
+  } else if (tl==LUA_TINT) {  /* l:int, r:num */
+      return luai_numle( cast_num(ivalue(l)), nvalue_fast(r) );
+  } else if (tl==LUA_TNUMBER) {  /* l:num, r:int */
+      return luai_numle( nvalue_fast(l), cast_num(ivalue(r)) );
+  }
+  if ((res = call_orderTM(L, l, r, TM_LE)) != -1)  /* first try `le' */
+    return res;
+  else if ((res = call_orderTM(L, r, l, TM_LT)) != -1)  /* else try `lt' */
+    return !res;
+#else
   else if (ttisnumber(l))
     return luai_numle(nvalue(l), nvalue(r));
   else if (ttisstring(l))
@@ -248,6 +419,7 @@ static int lessequal (lua_State *L, const TValue *l, const TValue *r) {
     return res;
   else if ((res = call_orderTM(L, r, l, TM_LT)) != -1)  /* else try `lt' */
     return !res;
+#endif
   return luaG_ordererror(L, l, r);
 }
 
@@ -257,7 +429,12 @@ int luaV_equalval (lua_State *L, const TValue *t1, const TValue *t2) {
   lua_assert(ttype(t1) == ttype(t2));
   switch (ttype(t1)) {
     case LUA_TNIL: return 1;
+#ifdef LUA_TINT
+    case LUA_TINT: return ivalue(t1) == ivalue(t2);
+    case LUA_TNUMBER: return luai_numeq(nvalue_fast(t1), nvalue_fast(t2));
+#else
     case LUA_TNUMBER: return luai_numeq(nvalue(t1), nvalue(t2));
+#endif
     case LUA_TBOOLEAN: return bvalue(t1) == bvalue(t2);  /* true must be 1 !! */
     case LUA_TLIGHTUSERDATA: return pvalue(t1) == pvalue(t2);
     case LUA_TUSERDATA: {
@@ -320,23 +497,74 @@ static void Arith (lua_State *L, StkId ra, const TValue *rb,
   const TValue *b, *c;
   if ((b = luaV_tonumber(rb, &tempb)) != NULL &&
       (c = luaV_tonumber(rc, &tempc)) != NULL) {
-    lua_Number nb = nvalue(b), nc = nvalue(c);
+      /*FIXME*/
+    lua_Number nb, nc;
+#ifdef LUA_TINT
+    /* Keep integer arithmetics in the integer realm, if possible (for speed,
+     * but also accuracy). 
+     */
+    if (ttisinteger(b) && ttisinteger(c)) {
+      lua_Integer ib = ivalue(b), ic = ivalue(c);
+      switch (op) {
+        case TM_ADD: if (try_addint(ra, ib, ic)) return; break;
+        case TM_SUB: if (try_subint(ra, ib, ic)) return; break;
+        case TM_MUL: if (try_mulint(ra, ib, ic)) return; break;
+        case TM_DIV: if (try_divint(ra, ib, ic)) return; break;
+        case TM_MOD: if (try_modint(ra, ib, ic)) return; break;
+        case TM_POW: if (try_powint(ra, ib, ic)) return; break;
+        case TM_UNM: if (try_unmint(ra, ib)) return; break;
+#if defined(LUA_BITWISE_OPERATORS)
+      	case TM_INTDIV: if (try_divint(ra, ib, ic)) return; break;
+#endif
+        default: lua_assert(0); break;
+      }
+    }
+    /* Fallback to floating point, when leaving range. */
+#endif
+    nb = nvalue(b), nc = nvalue(c);
+
     switch (op) {
-      case TM_ADD: setnvalue(ra, luai_numadd(nb, nc)); break;
-      case TM_SUB: setnvalue(ra, luai_numsub(nb, nc)); break;
-      case TM_MUL: setnvalue(ra, luai_nummul(nb, nc)); break;
-      case TM_DIV: setnvalue(ra, luai_numdiv(nb, nc)); break;
-      case TM_MOD: setnvalue(ra, luai_nummod(nb, nc)); break;
-      case TM_POW: setnvalue(ra, luai_numpow(nb, nc)); break;
-      case TM_UNM: setnvalue(ra, luai_numunm(nb)); break;
+      case TM_ADD: setnvalue(ra, luai_numadd(nb, nc)); return;
+      case TM_SUB: setnvalue(ra, luai_numsub(nb, nc)); return;
+      case TM_MUL: setnvalue(ra, luai_nummul(nb, nc)); return;
+      case TM_DIV: setnvalue(ra, luai_numdiv(nb, nc)); return;
+      case TM_MOD: setnvalue(ra, luai_nummod(nb, nc)); return;
+      case TM_POW: setnvalue(ra, luai_numpow(nb, nc)); return;
+      case TM_UNM: setnvalue(ra, luai_numunm(nb)); return;
+#if defined(LUA_BITWISE_OPERATORS)
+      case TM_INTDIV: setnvalue(ra, luai_numintdiv(nb, nc)); return;
+#endif
       default: lua_assert(0); break;
     }
   }
-  else if (!call_binTM(L, rb, rc, ra, op))
+  if (!call_binTM(L, rb, rc, ra, op))
     luaG_aritherror(L, rb, rc);
 }
 
-
+#if defined(LUA_BITWISE_OPERATORS)
+static void Logic (lua_State *L, StkId ra, const TValue *rb,
+                   const TValue *rc, TMS op) {
+  TValue tempb, tempc;
+  const TValue *b, *c;
+  if ((b = luaV_tonumber(rb, &tempb)) != NULL &&
+      (c = luaV_tonumber(rc, &tempc)) != NULL) {
+    lua_Number nb = nvalue(b), nc = nvalue(c);
+    lua_Integer r;
+    switch (op) {
+      case TM_BLSHFT: luai_loglshft(r, nb, nc); break;
+      case TM_BRSHFT: luai_logrshft(r, nb, nc); break;
+      case TM_BOR: luai_logor(r, nb, nc); break;
+      case TM_BAND: luai_logand(r, nb, nc); break;
+      case TM_BXOR: luai_logxor(r, nb, nc); break;
+      case TM_BNOT: luai_lognot(r, nb); break;
+      default: lua_assert(0); r = 0; break;
+    }
+    setnvalue(ra, r);
+  }
+  else if (!call_binTM(L, rb, rc, ra, op))
+    luaG_logicerror(L, rb, rc);
+}
+#endif
 
 /*
 ** some macros for common tasks in `luaV_execute'
@@ -360,8 +588,25 @@ static void Arith (lua_State *L, StkId ra, const TValue *rb,
 
 #define Protect(x)	{ L->savedpc = pc; {x;}; base = L->base; }
 
-
-#define arith_op(op,tm) { \
+#ifdef LUA_TINT
+  #define arith_op(op_num,tm,op_int) { \
+        TValue *rb = RKB(i); \
+        TValue *rc = RKC(i); \
+        int done= 0; \
+        if (ttisinteger(rb) && ttisinteger(rc)) { \
+          lua_Integer ib = ivalue(rb), ic = ivalue(rc); \
+          if (op_int (ra,ib,ic)) done=1; \
+        } \
+        if (!done) { \
+          if (ttisnumber(rb) && ttisnumber(rc)) { \
+            lua_Number nb = nvalue(rb), nc = nvalue(rc); \
+            setnvalue(ra, op_num (nb, nc)); \
+          } else \
+            Protect(Arith(L, ra, rb, rc, tm)); \
+        } \
+      }
+#else
+  #define arith_op(op,tm,_) { \
         TValue *rb = RKB(i); \
         TValue *rc = RKC(i); \
         if (ttisnumber(rb) && ttisnumber(rc)) { \
@@ -371,6 +616,21 @@ static void Arith (lua_State *L, StkId ra, const TValue *rb,
         else \
           Protect(Arith(L, ra, rb, rc, tm)); \
       }
+#endif
+
+#if defined(LUA_BITWISE_OPERATORS)
+#define logic_op(op,tm) { \
+        TValue *rb = RKB(i); \
+        TValue *rc = RKC(i); \
+        if (ttisnumber(rb) && ttisnumber(rc)) { \
+          lua_Integer r; \
+          op(r, nvalue(rb), nvalue(rc)); \
+          setnvalue(ra, r); \
+        } \
+        else \
+          Protect(Logic(L, ra, rb, rc, tm)); \
+      }
+#endif
 
 
 
@@ -472,31 +732,37 @@ void luaV_execute (lua_State *L, int nexeccalls) {
         continue;
       }
       case OP_ADD: {
-        arith_op(luai_numadd, TM_ADD);
+        arith_op(luai_numadd, TM_ADD, try_addint);
         continue;
       }
       case OP_SUB: {
-        arith_op(luai_numsub, TM_SUB);
+        arith_op(luai_numsub, TM_SUB, try_subint);
         continue;
       }
       case OP_MUL: {
-        arith_op(luai_nummul, TM_MUL);
+        arith_op(luai_nummul, TM_MUL, try_mulint);
         continue;
       }
       case OP_DIV: {
-        arith_op(luai_numdiv, TM_DIV);
+        arith_op(luai_numdiv, TM_DIV, try_divint);
         continue;
       }
       case OP_MOD: {
-        arith_op(luai_nummod, TM_MOD);
+        arith_op(luai_nummod, TM_MOD, try_modint);
         continue;
       }
       case OP_POW: {
-        arith_op(luai_numpow, TM_POW);
+        arith_op(luai_numpow, TM_POW, try_powint);
         continue;
       }
       case OP_UNM: {
         TValue *rb = RB(i);
+#ifdef LUA_TINT
+        if (ttisinteger(rb)) {
+            if (try_unmint( ra, ivalue(rb) ))
+                continue;
+        }
+#endif
         if (ttisnumber(rb)) {
           lua_Number nb = nvalue(rb);
           setnvalue(ra, luai_numunm(nb));
@@ -506,6 +772,44 @@ void luaV_execute (lua_State *L, int nexeccalls) {
         }
         continue;
       }
+#if defined(LUA_BITWISE_OPERATORS)
+      case OP_BOR: {
+        logic_op(luai_logor, TM_BOR);
+        continue;
+      }
+      case OP_BAND: {
+        logic_op(luai_logand, TM_BAND);
+        continue;
+      }
+      case OP_BXOR: {
+        logic_op(luai_logxor, TM_BXOR);
+        continue;
+      }
+      case OP_BLSHFT: {
+        logic_op(luai_loglshft, TM_BRSHFT);
+        continue;
+      }
+      case OP_BRSHFT: {
+        logic_op(luai_logrshft, TM_BRSHFT);
+        continue;
+      }
+      case OP_BNOT: {
+        TValue *rb = RB(i);
+        if (ttisnumber(rb)) {
+          lua_Integer r;
+          luai_lognot(r, nvalue(rb));
+          setnvalue(ra, r);
+        }
+        else {
+          Protect(Logic(L, ra, rb, rb, TM_BNOT));
+        }
+        continue;
+      }
+      case OP_INTDIV: {
+        arith_op(luai_numintdiv, TM_DIV, try_divint);
+        continue;
+      }
+#endif
       case OP_NOT: {
         int res = l_isfalse(RB(i));  /* next assignment may change this value */
         setbvalue(ra, res);
@@ -515,11 +819,11 @@ void luaV_execute (lua_State *L, int nexeccalls) {
         const TValue *rb = RB(i);
         switch (ttype(rb)) {
           case LUA_TTABLE: {
-            setnvalue(ra, cast_num(luaH_getn(hvalue(rb))));
+            setivalue(ra, luaH_getn(hvalue(rb)));
             break;
           }
           case LUA_TSTRING: {
-            setnvalue(ra, cast_num(tsvalue(rb)->len));
+            setivalue(ra, tsvalue(rb)->len);
             break;
           }
           default: {  /* try metamethod */
@@ -652,9 +956,33 @@ void luaV_execute (lua_State *L, int nexeccalls) {
         }
       }
       case OP_FORLOOP: {
-        lua_Number step = nvalue(ra+2);
-        lua_Number idx = luai_numadd(nvalue(ra), step); /* increment index */
-        lua_Number limit = nvalue(ra+1);
+		lua_Number step, idx, limit;
+#ifdef LUA_TINT
+        /* If all start,step and limit are integers, we don't need to 
+         * check against overflow in the looping.
+         * 
+         * Note: Avoid use of "for i=1,math.huge do ..." on non-FPU
+         *       architectures, since "math.huge" causes the slower
+         *       non-integer fallback (use 99999 instead).
+         */
+        if (ttisinteger(ra) && ttisinteger(ra+1) && ttisinteger(ra+2)) {
+          lua_Integer step = ivalue(ra+2);
+          lua_Integer idx = ivalue(ra) + step; /* increment index */
+          lua_Integer limit = ivalue(ra+1);
+          if (step > 0 ? (idx <= limit) : (limit <= idx)) {
+            dojump(L, pc, GETARG_sBx(i));  /* jump back */
+            setivalue(ra, idx);  /* update internal index... */
+            setivalue(ra+3, idx);  /* ...and external index */
+          }
+          continue;
+        } 
+        /* fallback to non-integer looping (don't use 'nvalue_fast', 
+           some values may be integer!) 
+        */
+#endif
+        step = nvalue(ra+2);
+        idx = luai_numadd(nvalue(ra), step); /* increment index */
+        limit = nvalue(ra+1);
         if (luai_numlt(0, step) ? luai_numle(idx, limit)
                                 : luai_numle(limit, idx)) {
           dojump(L, pc, GETARG_sBx(i));  /* jump back */
@@ -674,7 +1002,18 @@ void luaV_execute (lua_State *L, int nexeccalls) {
           luaG_runerror(L, LUA_QL("for") " limit must be a number");
         else if (!tonumber(pstep, ra+2))
           luaG_runerror(L, LUA_QL("for") " step must be a number");
+#ifdef LUA_TINT
+        /* Step back one value (must make sure also that is safely within range)
+         */
+        if ( ttisinteger(ra) && ttisinteger(pstep) &&
+              try_subint( ra, ivalue(ra), ivalue(pstep) ) )  { /*done*/ }
+        else { 
+            /* don't use 'nvalue_fast()', the values may be integer */
+            setnvalue(ra, luai_numsub(nvalue(ra), nvalue(pstep)));
+        }
+#else
         setnvalue(ra, luai_numsub(nvalue(ra), nvalue(pstep)));
+#endif
         dojump(L, pc, GETARG_sBx(i));
         continue;
       }

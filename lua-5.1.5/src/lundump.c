@@ -73,6 +73,15 @@ static lua_Number LoadNumber(LoadState* S)
  return x;
 }
 
+#ifdef LUA_TINT
+static lua_Integer LoadInteger(LoadState* S)
+{
+ lua_Integer x;
+ LoadVar(S,x);
+ return x;
+}
+#endif
+
 static TString* LoadString(LoadState* S)
 {
  size_t size;
@@ -119,6 +128,11 @@ static void LoadConstants(LoadState* S, Proto* f)
    case LUA_TNUMBER:
 	setnvalue(o,LoadNumber(S));
 	break;
+#ifdef LUA_TINT
+   case LUA_TINT:
+	setivalue(o,LoadInteger(S));
+	break;
+#endif
    case LUA_TSTRING:
 	setsvalue2n(S->L,o,LoadString(S));
 	break;
@@ -223,5 +237,24 @@ void luaU_header (char* h)
  *h++=(char)sizeof(size_t);
  *h++=(char)sizeof(Instruction);
  *h++=(char)sizeof(lua_Number);
+
+ // 0: lua_Number is float or double, lua_Integer not used.
+ // 4/8: sizeof(lua_Integer)
+ // other: lua_Number is integer (see discussion below)
+ //
+#ifdef LUA_TINT
+ *h++= (char) sizeof(lua_Integer);
+#else
+ /* AK 22-Jul-06: 
+  * The current (Lua 5.1) way of storing a boolean value into the binary header, and then checking
+  * with 'memcmp()' (see line 199: " IF (memcmp(h,s,LUAC_HEADERSIZE)!=0, "bad header");") 
+  * whether the headers match perfectly is a Bad Thing. True is guarenteed to be "non-zero", and may
+  * be compiler or even situation specific.
+  *
+  * This bug only matters if 'lua_Number' is an integer type, so... almost theoretical. :) 
+  * Anyways, this is safe:
+  *     *h++=(char)(((lua_Number)0.5)==0 ? 1:0);
+  */
  *h++=(char)(((lua_Number)0.5)==0);		/* is lua_Number integral? */
+#endif
 }

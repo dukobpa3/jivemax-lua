@@ -725,7 +725,7 @@ static void primaryexp (LexState *ls, expdesc *v) {
 
 
 static void simpleexp (LexState *ls, expdesc *v) {
-  /* simpleexp -> NUMBER | STRING | NIL | true | false | ... |
+  /* simpleexp -> NUMBER | INT | STRING | NIL | true | false | ... |
                   constructor | FUNCTION body | primaryexp */
   switch (ls->t.token) {
     case TK_NUMBER: {
@@ -733,6 +733,13 @@ static void simpleexp (LexState *ls, expdesc *v) {
       v->u.nval = ls->t.seminfo.r;
       break;
     }
+#ifdef LUA_TINT
+    case TK_INT: {
+      init_exp(v, VKINT, 0);
+      v->u.ival = ls->t.seminfo.i;
+      break;
+    }
+#endif
     case TK_STRING: {
       codestring(ls, v, ls->t.seminfo.ts);
       break;
@@ -780,6 +787,9 @@ static UnOpr getunopr (int op) {
     case TK_NOT: return OPR_NOT;
     case '-': return OPR_MINUS;
     case '#': return OPR_LEN;
+#if defined(LUA_BITWISE_OPERATORS)
+    case '~': return OPR_BNOT;
+#endif
     default: return OPR_NOUNOPR;
   }
 }
@@ -793,6 +803,14 @@ static BinOpr getbinopr (int op) {
     case '/': return OPR_DIV;
     case '%': return OPR_MOD;
     case '^': return OPR_POW;
+#if defined(LUA_BITWISE_OPERATORS)
+    case '|': return OPR_BOR;
+    case '&': return OPR_BAND;
+    case TK_XOR: return OPR_BXOR;
+    case TK_LSHFT: return OPR_BLSHFT;
+    case TK_RSHFT: return OPR_BRSHFT;
+    case '\\': return OPR_INTDIV;
+#endif
     case TK_CONCAT: return OPR_CONCAT;
     case TK_NE: return OPR_NE;
     case TK_EQ: return OPR_EQ;
@@ -812,6 +830,9 @@ static const struct {
   lu_byte right; /* right priority */
 } priority[] = {  /* ORDER OPR */
    {6, 6}, {6, 6}, {7, 7}, {7, 7}, {7, 7},  /* `+' `-' `/' `%' */
+#if defined(LUA_BITWISE_OPERATORS)
+   {6, 6}, {6, 6}, {6, 6}, {7, 7}, {7, 7}, {7, 7}, /* `|' `&' `!' `<<' `>>' `\' */
+#endif
    {10, 9}, {5, 4},                 /* power and concat (right associative) */
    {3, 3}, {3, 3},                  /* equality and inequality */
    {3, 3}, {3, 3}, {3, 3}, {3, 3},  /* order */
@@ -1079,7 +1100,7 @@ static void fornum (LexState *ls, TString *varname, int line) {
   if (testnext(ls, ','))
     exp1(ls);  /* optional step */
   else {  /* default step = 1 */
-    luaK_codeABx(fs, OP_LOADK, fs->freereg, luaK_numberK(fs, 1));
+    luaK_codeABx(fs, OP_LOADK, fs->freereg, luaK_integerK(fs, 1));
     luaK_reserveregs(fs, 1);
   }
   forbody(ls, base, line, 1, 1);

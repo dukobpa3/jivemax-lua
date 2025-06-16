@@ -74,8 +74,15 @@ int luaO_rawequalObj (const TValue *t1, const TValue *t2) {
   else switch (ttype(t1)) {
     case LUA_TNIL:
       return 1;
+#ifdef LUA_TINT
+    case LUA_TINT:
+      return ivalue(t1) == ivalue(t2);
+    case LUA_TNUMBER:
+      return luai_numeq(nvalue_fast(t1), nvalue_fast(t2));
+#else
     case LUA_TNUMBER:
       return luai_numeq(nvalue(t1), nvalue(t2));
+#endif
     case LUA_TBOOLEAN:
       return bvalue(t1) == bvalue(t2);  /* boolean true must be 1 !! */
     case LUA_TLIGHTUSERDATA:
@@ -87,6 +94,11 @@ int luaO_rawequalObj (const TValue *t1, const TValue *t2) {
 }
 
 
+/* WARN: Callers should use 'luaO_str2d()' only after having checked with
+ *       'luaO_str2i()' (below) for integer entries. Otherwise, integer
+ *       accuracy may be compromised in the float+int32 (NUMBER_MODE=11),
+ *       float+int64 (NUMBER_MODE=21) and double+int64 (NUMBER_MODE=22) setups.
+ */
 int luaO_str2d (const char *s, lua_Number *result) {
   char *endptr;
   *result = lua_str2number(s, &endptr);
@@ -99,6 +111,28 @@ int luaO_str2d (const char *s, lua_Number *result) {
   return 1;
 }
 
+#ifdef LUA_TINT
+int /*bool*/ luaO_str2i (const char *s, lua_Integer *res) {
+  char *endptr;
+/* Note: Regular Lua (using 'strtod()') allow 0x+hex but not 0+octal.
+ *       The 'strtoul[l]()' functions allow both if using the "autobase" 0.
+ */
+  lua_str2ul_t v= lua_str2ul(s, &endptr, 10);
+  if (endptr == s) return 0;  /* conversion failed */
+  if (*endptr=='x')
+    v= lua_str2ul(s, &endptr, 16);  /* retry, as hex */
+
+  if (*endptr != '\0') {
+    while (isspace(cast(unsigned char, *endptr))) endptr++;
+    if (*endptr != '\0') return 0;  /* invalid trail */
+  }
+  /* Read in hex as unsigned, but store as signed. That is, store the exact bit
+     pattern without accuracy losses, ranging 0...0xFFFFFFFF[FFFFFFFF] (full range).
+   */
+  *res= (lua_Integer)v;
+  return 1;
+}
+#endif
 
 
 static void pushstr (lua_State *L, const char *str) {
@@ -131,7 +165,7 @@ const char *luaO_pushvfstring (lua_State *L, const char *fmt, va_list argp) {
         break;
       }
       case 'd': {
-        setnvalue(L->top, cast_num(va_arg(argp, int)));
+        setivalue(L->top, va_arg(argp, int));
         incr_top(L);
         break;
       }

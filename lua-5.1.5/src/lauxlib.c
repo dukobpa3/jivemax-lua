@@ -187,10 +187,10 @@ LUALIB_API lua_Number luaL_optnumber (lua_State *L, int narg, lua_Number def) {
 
 
 LUALIB_API lua_Integer luaL_checkinteger (lua_State *L, int narg) {
-  lua_Integer d = lua_tointeger(L, narg);
-  if (d == 0 && !lua_isnumber(L, narg))  /* avoid extra test when d is not 0 */
-    tag_error(L, narg, LUA_TNUMBER);
-  return d;
+  lua_Integer v = lua_tointeger(L, narg);
+  if (v == 0 && !lua_isinteger(L, narg))  /* avoid extra test when v is not 0 */
+    tag_error(L, narg, LUA_TNUMBER);    /* use LUA_TNUMBER; that is the type for the user */
+  return v;
 }
 
 
@@ -574,7 +574,8 @@ LUALIB_API int luaL_loadfile (lua_State *L, const char *filename) {
     lf.f = freopen(filename, "rb", lf.f);  /* reopen in binary mode */
     if (lf.f == NULL) return errfile(L, "reopen", fnameindex);
     /* skip eventual `#!...' */
-   while ((c = getc(lf.f)) != EOF && c != LUA_SIGNATURE[0]) ;
+   while ((c = getc(lf.f)) != EOF && c != LUA_SIGNATURE[0])
+	;
     lf.extraline = 0;
   }
   ungetc(c, lf.f);

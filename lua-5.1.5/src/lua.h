@@ -17,7 +17,7 @@
 
 
 #define LUA_VERSION	"Lua 5.1"
-#define LUA_RELEASE	"Lua 5.1.5"
+#define LUA_RELEASE	"Lua 5.1.5T-int-lno"
 #define LUA_VERSION_NUM	501
 #define LUA_COPYRIGHT	"Copyright (C) 1994-2012 Lua.org, PUC-Rio"
 #define LUA_AUTHORS 	"R. Ierusalimschy, L. H. de Figueiredo & W. Celes"
@@ -71,6 +71,17 @@ typedef void * (*lua_Alloc) (void *ud, void *ptr, size_t osize, size_t nsize);
 */
 #define LUA_TNONE		(-1)
 
+/* LUA_TINT is an internal type, not visible to applications. If it is included
+ * in stock Lua, it should be given value LUA_TNUMBER+1, and LUA_TSTRING etc.
+ * incremented to give room (this will make it "fit in" as a non-collectible tag).
+ *
+ * NOTE: Not defining LUA_TINT will disable "integer patch" (if you have an FPU,
+ *       it wouldn't add much speed, but wouldn't slow down either).
+*/
+#if (LUA_NUMBER_MODE >= 10)
+  #define LUA_TINT (-2)
+#endif
+
 #define LUA_TNIL		0
 #define LUA_TBOOLEAN		1
 #define LUA_TLIGHTUSERDATA	2
@@ -80,7 +91,6 @@ typedef void * (*lua_Alloc) (void *ud, void *ptr, size_t osize, size_t nsize);
 #define LUA_TFUNCTION		6
 #define LUA_TUSERDATA		7
 #define LUA_TTHREAD		8
-
 
 
 /* minimum Lua stack available to a C function */
@@ -138,6 +148,8 @@ LUA_API int             (lua_iscfunction) (lua_State *L, int idx);
 LUA_API int             (lua_isuserdata) (lua_State *L, int idx);
 LUA_API int             (lua_type) (lua_State *L, int idx);
 LUA_API const char     *(lua_typename) (lua_State *L, int tp);
+
+LUA_API int             (lua_isinteger) (lua_State *L, int idx);
 
 LUA_API int            (lua_equal) (lua_State *L, int idx1, int idx2);
 LUA_API int            (lua_rawequal) (lua_State *L, int idx1, int idx2);
@@ -268,7 +280,17 @@ LUA_API void lua_setallocf (lua_State *L, lua_Alloc f, void *ud);
 #define lua_isboolean(L,n)	(lua_type(L, (n)) == LUA_TBOOLEAN)
 #define lua_isthread(L,n)	(lua_type(L, (n)) == LUA_TTHREAD)
 #define lua_isnone(L,n)		(lua_type(L, (n)) == LUA_TNONE)
-#define lua_isnoneornil(L, n)	(lua_type(L, (n)) <= 0)
+
+#if defined(LUA_TINT) && (LUA_TINT < 0)
+  #ifdef INLINE
+    INLINE int lua_isnoneornil( lua_State* L, int n)
+      { int t= lua_type(L,n); return (t==LUA_TNONE) || (t==LUA_TNIL); }
+  #else
+    #define lua_isnoneornil(L, n)	((lua_type(L,(n))==LUA_TNONE) || (lua_type(L,(n))==LUA_TNIL))
+  #endif
+#else
+  #define lua_isnoneornil(L, n)	(lua_type(L, (n)) <= 0)   /*original*/
+#endif
 
 #define lua_pushliteral(L, s)	\
 	lua_pushlstring(L, "" s, (sizeof(s)/sizeof(char))-1)
@@ -357,6 +379,7 @@ struct lua_Debug {
   /* private part */
   int i_ci;  /* active function */
 };
+
 
 /* }====================================================================== */
 

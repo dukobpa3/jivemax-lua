@@ -60,7 +60,16 @@ static void PrintConstant(const Proto* f, int i)
 	printf(bvalue(o) ? "true" : "false");
 	break;
   case LUA_TNUMBER:
+#ifdef LUA_TINT
+    printf(LUA_NUMBER_FMT,nvalue_fast(o));
+#else
 	printf(LUA_NUMBER_FMT,nvalue(o));
+#endif
+	break;
+#ifdef LUA_TINT
+  case LUA_TINT:
+    printf(LUA_INTEGER_FMT, LUA_INTEGER_FMT_CAST ivalue(o));
+#endif
 	break;
   case LUA_TSTRING:
 	PrintString(rawtsvalue(o));

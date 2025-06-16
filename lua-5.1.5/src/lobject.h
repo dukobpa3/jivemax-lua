@@ -59,9 +59,24 @@ typedef struct GCheader {
 typedef union {
   GCObject *gc;
   void *p;
+#ifdef LUA_TINT
+  lua_Integer i;    /* signed 32/64-bits */
+#endif
   lua_Number n;
   int b;
 } Value;
+
+#ifdef LUA_TINT
+ #if LUA_INTEGER_SIZEOF==4
+  #define LUA_INTEGER_MIN ((lua_Integer)0x80000000U)    /* -2^31 */
+  #define LUA_INTEGER_MAX ((lua_Integer)0x7FFFFFFF)     /* 2^31-1 */
+ #elif LUA_INTEGER_SIZEOF==8
+  #define LUA_INTEGER_MIN LLONG_MIN     /* -2^63 */
+  #define LUA_INTEGER_MAX LLONG_MAX     /* 2^63-1 */
+ #else
+  #error "No LUA_INTEGER_SIZEOF"
+ #endif
+#endif
 
 
 /*
@@ -77,7 +92,14 @@ typedef struct lua_TValue {
 
 /* Macros to test type */
 #define ttisnil(o)	(ttype(o) == LUA_TNIL)
-#define ttisnumber(o)	(ttype(o) == LUA_TNUMBER)
+#ifdef LUA_TINT
+  #define ttisinteger(o) (ttype(o) == LUA_TINT)
+  #define ttisnumber(o) ((ttype(o) == LUA_TINT) || (ttype(o) == LUA_TNUMBER))
+  /* 'ttisnumber_raw()' for non-int32 numbers (gives FALSE on int32's) */
+  #define ttisnumber_raw(o)	(ttype(o) == LUA_TNUMBER)
+#else
+  #define ttisnumber(o)	(ttype(o) == LUA_TNUMBER)
+#endif
 #define ttisstring(o)	(ttype(o) == LUA_TSTRING)
 #define ttistable(o)	(ttype(o) == LUA_TTABLE)
 #define ttisfunction(o)	(ttype(o) == LUA_TFUNCTION)
@@ -90,7 +112,23 @@ typedef struct lua_TValue {
 #define ttype(o)	((o)->tt)
 #define gcvalue(o)	check_exp(iscollectable(o), (o)->value.gc)
 #define pvalue(o)	check_exp(ttislightuserdata(o), (o)->value.p)
-#define nvalue(o)	check_exp(ttisnumber(o), (o)->value.n)
+
+#ifdef LUA_TINT
+  #define ttype2(o)  ( ttype(o) == LUA_TINT ? LUA_TNUMBER : ttype(o) )
+#else
+  #define ttype2 ttype
+#endif
+
+#ifdef LUA_TINT
+  #define ivalue(o)	check_exp( ttype(o)==LUA_TINT, (o)->value.i )
+  #define nvalue(o)	check_exp( ttisnumber(o), (ttype(o)==LUA_TINT) ? cast_num((o)->value.i) : (o)->value.n )
+  /* nvalue_fast() only if you KNOW it's not an int */
+  #define nvalue_fast(o) check_exp( ttype(o)==LUA_TNUMBER, (o)->value.n )   
+#else
+  #define nvalue(o)	check_exp(ttisnumber(o), (o)->value.n)
+  #define ivalue(o) cast(int,nvalue(o))
+#endif
+
 #define rawtsvalue(o)	check_exp(ttisstring(o), &(o)->value.gc->ts)
 #define tsvalue(o)	(&rawtsvalue(o)->tsv)
 #define rawuvalue(o)	check_exp(ttisuserdata(o), &(o)->value.gc->u)
@@ -116,8 +154,44 @@ typedef struct lua_TValue {
 /* Macros to set values */
 #define setnilvalue(obj) ((obj)->tt=LUA_TNIL)
 
-#define setnvalue(obj,x) \
-  { TValue *i_o=(obj); i_o->value.n=(x); i_o->tt=LUA_TNUMBER; }
+#ifdef LUA_TINT
+  #ifdef INLINE
+    INLINE void setivalue( TValue *obj, lua_Integer x )
+      { obj->value.i=x; obj->tt=LUA_TINT; }
+
+  /* Note: The casting to 'lua_Integer' and then checking for equality
+   *       simultaneously checks _both_ no fraction _and_ valid range.
+   */
+    INLINE void setnvalue( TValue *obj, lua_Number x )
+      {
+      lua_number2integer(obj->value.i,x);  /*optimized*/
+      if (x==obj->value.i) obj->tt=LUA_TINT;
+      else { obj->value.n=x; obj->tt=LUA_TNUMBER; }
+      }
+  #else
+    /* Poor, old ANSI C.. (must not have side effects, 'x' may be expression)
+     */
+    #define setivalue(obj,x) \
+      do { TValue *i_o=(obj); i_o->value.i=(x); i_o->tt=LUA_TINT; } while(0)
+
+    #define setnvalue(obj,x) \
+      do { TValue *i_o=(obj); lua_Number xx=(x); \
+           lua_number2integer(i_o->value.i,xx); \
+           if (xx==i_o->value.i) i_o->tt=LUA_TINT; \
+           else { i_o->value.n=xx; i_o->tt=LUA_TNUMBER; } } while(0)
+  #endif
+
+  /* This to be used when we KNOW that a value is not an integer.
+  */
+  #define setnvalue_fast(obj,x) \
+      { TValue *i_o=(obj); i_o->value.n=(x); i_o->tt=LUA_TNUMBER; }
+#else
+  #define setnvalue(obj,x) \
+      { TValue *i_o=(obj); i_o->value.n=(x); i_o->tt=LUA_TNUMBER; }
+  
+  #define setivalue(obj,x) \
+      setnvalue( (obj), cast(lua_Number, (x)) )
+#endif
 
 #define setpvalue(obj,x) \
   { TValue *i_o=(obj); i_o->value.p=(x); i_o->tt=LUA_TLIGHTUSERDATA; }
@@ -185,8 +259,13 @@ typedef struct lua_TValue {
 
 #define setttype(obj, tt) (ttype(obj) = (tt))
 
-
-#define iscollectable(o)	(ttype(o) >= LUA_TSTRING)
+/* If LUA_TINT is >= LUA_TSTRING, 'iscollectable()' needs to be changed.
+ */
+#if defined(LUA_TINT) && (LUA_TINT >= LUA_TSTRING)
+  #define iscollectable(o)	((ttype(o) >= LUA_TSTRING) && (ttype(o) != LUA_TINT))
+#else
+  #define iscollectable(o)	(ttype(o) >= LUA_TSTRING)
+#endif
 
 
 
@@ -376,6 +455,9 @@ LUAI_FUNC const char *luaO_pushvfstring (lua_State *L, const char *fmt,
 LUAI_FUNC const char *luaO_pushfstring (lua_State *L, const char *fmt, ...);
 LUAI_FUNC void luaO_chunkid (char *out, const char *source, size_t len);
 
+#ifdef LUA_TINT
+  LUAI_FUNC int luaO_str2i (const char *s, lua_Integer *res);
+#endif
 
 #endif
 

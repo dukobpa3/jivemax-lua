@@ -2,6 +2,7 @@
 ** $Id: luaconf.h,v 1.82.1.7 2008/02/11 16:25:08 roberto Exp $
 ** Configuration file for Lua
 ** See Copyright Notice in lua.h
+** Added logic operators : & | ^^ (xor) << >> ~, arithmetic operator \ (integer division) and != as an alternative to ~=
 */
 
 
@@ -10,6 +11,18 @@
 
 #include <limits.h>
 #include <stddef.h>
+
+
+/* INT32 patch: Use LUA_NUMBER_MODE to determine the number mode, being:
+    0 = integer only (no floats, avoid)
+    1 = float for all
+    2 = double for all
+    +10 = int32 optimized
+    +20 = int64 optimized
+*/
+#ifndef LUA_NUMBER_MODE
+  #define LUA_NUMBER_MODE 12
+#endif
 
 
 /*
@@ -36,7 +49,7 @@
 #if defined(LUA_USE_LINUX)
 #define LUA_USE_POSIX
 #define LUA_USE_DLOPEN		/* needs an extra library: -ldl */
-/* #define LUA_USE_READLINE	needs some extra libraries */
+#define LUA_USE_READLINE	/* needs some extra libraries */
 #endif
 
 #if defined(LUA_USE_MACOSX)
@@ -94,7 +107,7 @@
 	".\\?.dll;"  LUA_CDIR"?.dll;" LUA_CDIR"loadall.dll"
 
 #else
-#define LUA_ROOT	"/usr/local/"
+#define LUA_ROOT	"/usr/"
 #define LUA_LDIR	LUA_ROOT "share/lua/5.1/"
 #define LUA_CDIR	LUA_ROOT "lib/lua/5.1/"
 #define LUA_PATH_DEFAULT  \
@@ -140,7 +153,21 @@
 ** CHANGE that if ptrdiff_t is not adequate on your machine. (On most
 ** machines, ptrdiff_t gives a good choice between int or long.)
 */
-#define LUA_INTEGER	ptrdiff_t
+#if (LUA_NUMBER_MODE >= 20)
+  #define LUA_INTEGER	long long
+  #define lua_str2ul strtoull
+  #define lua_str2ul_t unsigned LUA_INTEGER
+  #define LUA_INTEGER_SIZEOF 8    /* sizeof(LUA_INTEGER), but so it can be used by cpp */
+  #define LUA_INTEGER_FMT		 "%lld"
+  #define LUA_INTEGER_FMT_CAST   (long long)
+#else
+  #define LUA_INTEGER	ptrdiff_t
+  #define lua_str2ul strtoul
+  #define lua_str2ul_t unsigned  /* 'unsigned ptrdiff_t' is invalid */
+  #define LUA_INTEGER_SIZEOF 4    /* sizeof(LUA_INTEGER), but so it can be used by cpp */
+  #define LUA_INTEGER_FMT		 "%ld"
+  #define LUA_INTEGER_FMT_CAST   (long)
+#endif
 
 
 /*
@@ -209,12 +236,19 @@
 */
 #define LUA_IDSIZE	60
 
+/*
+@@ LUA_BITWISE_OPERATORS enable logical operators | & ^| >> << ~ on lua_Number
+@* but also arithmetic operator \ (integer division) and != as an alernative to ~=
+*/
+#define LUA_BITWISE_OPERATORS
+
 
 /*
 ** {==================================================================
 ** Stand-alone configuration
 ** ===================================================================
 */
+
 
 #if defined(lua_c) || defined(luaall_c)
 
@@ -500,9 +534,14 @@
 ** change lua_number2int & lua_number2integer.
 ** ===================================================================
 */
-
-#define LUA_NUMBER_DOUBLE
-#define LUA_NUMBER	double
+#if (LUA_NUMBER_MODE % 10) == 2
+  #define LUA_NUMBER_DOUBLE
+  #define LUA_NUMBER	double
+#elif (LUA_NUMBER_MODE % 10) == 1
+  #define LUA_NUMBER    float
+#else
+  #error "Unknown mode"
+#endif
 
 /*
 @@ LUAI_UACNUMBER is the result of an 'usual argument conversion'
@@ -518,30 +557,22 @@
 @@ LUAI_MAXNUMBER2STR is maximum size of previous conversion.
 @@ lua_str2number converts a string to a number.
 */
-#define LUA_NUMBER_SCAN		"%lf"
-#define LUA_NUMBER_FMT		"%.14g"
+#if (LUA_NUMBER_MODE % 10) == 2
+  #define LUA_NUMBER_SCAN		"%lf"
+  #define LUA_NUMBER_FMT		"%.14g"
+#elif (LUA_NUMBER_MODE % 10) == 1
+  #define LUA_NUMBER_SCAN       "%f"
+  #define LUA_NUMBER_FMT        "%g"  
+#else
+  #error "Unknown mode"
+#endif
+
 #define lua_number2str(s,n)	sprintf((s), LUA_NUMBER_FMT, (n))
-#define LUAI_MAXNUMBER2STR	32 /* 16 digits, sign, point, and \0 */
 #define lua_str2number(s,p)	strtod((s), (p))
 
+#define LUAI_MAXNUMBER2STR	32 /* normal: 19 (16 digits, sign, point, and \0) */
+                               /* int64: 21 (19 digits, sign, and \0) */
 
-/*
-@@ The luai_num* macros define the primitive operations over numbers.
-*/
-#if defined(LUA_CORE)
-#include <math.h>
-#define luai_numadd(a,b)	((a)+(b))
-#define luai_numsub(a,b)	((a)-(b))
-#define luai_nummul(a,b)	((a)*(b))
-#define luai_numdiv(a,b)	((a)/(b))
-#define luai_nummod(a,b)	((a) - floor((a)/(b))*(b))
-#define luai_numpow(a,b)	(pow(a,b))
-#define luai_numunm(a)		(-(a))
-#define luai_numeq(a,b)		((a)==(b))
-#define luai_numlt(a,b)		((a)<(b))
-#define luai_numle(a,b)		((a)<=(b))
-#define luai_numisnan(a)	(!luai_numeq((a), (a)))
-#endif
 
 
 /*
@@ -558,10 +589,15 @@
     (defined(__i386) || defined (_M_IX86) || defined(__i386__))
 
 /* On a Microsoft compiler, use assembler */
-#if defined(_MSC_VER)
+/* FIXME this assembler generates a runtime warning, disabled at the moment */
+#if defined(_MSC_VERXXX)
 
-#define lua_number2int(i,d)   __asm fld d   __asm fistp i
+#define lua_number2int(i,d)   { int l_i = (i); double l_d =(d); __asm fld l_d   __asm fistp l_i }
+#if (LUA_NUMBER_MODE >= 20)
+#define lua_number2integer(i,d)	((i)=(lua_Integer)(d))
+#else
 #define lua_number2integer(i,n)		lua_number2int(i, n)
+#endif
 
 /* the next trick should work on any Pentium, but sometimes clashes
    with a DirectX idiosyncrasy */
@@ -570,7 +606,11 @@
 union luai_Cast { double l_d; long l_l; };
 #define lua_number2int(i,d) \
   { volatile union luai_Cast u; u.l_d = (d) + 6755399441055744.0; (i) = u.l_l; }
+#if (LUA_NUMBER_MODE >= 20)
+#define lua_number2integer(i,d)	((i)=(lua_Integer)(d))
+#else
 #define lua_number2integer(i,n)		lua_number2int(i, n)
+#endif
 
 #endif
 
@@ -581,6 +621,41 @@ union luai_Cast { double l_d; long l_l; };
 #define lua_number2integer(i,d)	((i)=(lua_Integer)(d))
 
 #endif
+
+
+/*
+@@ The luai_num* macros define the primitive operations over numbers.
+*/
+#if defined(LUA_CORE)
+#include <math.h>
+#define luai_numadd(a,b)	((a)+(b))
+#define luai_numsub(a,b)	((a)-(b))
+#define luai_nummul(a,b)	((a)*(b))
+#define luai_numdiv(a,b)	((a)/(b))
+#ifdef LUA_BITWISE_OPERATORS
+#define luai_numintdiv(a,b)	(floor((a)/(b)))
+#endif
+#define luai_nummod(a,b)	((a) - floor((a)/(b))*(b))
+#define luai_numpow(a,b)	(pow(a,b))
+#define luai_numunm(a)		(-(a))
+#define luai_numeq(a,b)		((a)==(b))
+#define luai_numlt(a,b)		((a)<(b))
+#define luai_numle(a,b)		((a)<=(b))
+#define luai_numisnan(a)	(!luai_numeq((a), (a)))
+
+#if defined(LUA_BITWISE_OPERATORS)
+#define luai_logor(r, a, b)	{ lua_Integer ai,bi; lua_number2int(ai,a); lua_number2int(bi,b); r = ai|bi; }
+#define luai_logand(r, a,b)	{ lua_Integer ai,bi; lua_number2int(ai,a); lua_number2int(bi,b); r = ai&bi; }
+#define luai_logxor(r, a,b)	{ lua_Integer ai,bi; lua_number2int(ai,a); lua_number2int(bi,b); r = ai^bi; }
+#define luai_lognot(r,a)	{ lua_Integer ai; lua_number2int(ai,a); r = ~ai; }
+#define luai_logrshft(r, a,b)	{ lua_Integer ai,bi; lua_number2int(ai,a); lua_number2int(bi,b); r = ai>>bi; }
+#define luai_loglshft(r, a,b)	{ lua_Integer ai,bi; lua_number2int(ai,a); lua_number2int(bi,b); r = ai<<bi; }
+#endif
+
+#endif
+
+#define lua_integer2str(s,i) \
+        sprintf((s), LUA_INTEGER_FMT, LUA_INTEGER_FMT_CAST (i))    /* TBD: could use something faster? */
 
 /* }================================================================== */
 
@@ -736,7 +811,7 @@ union luai_Cast { double l_d; long l_l; };
 ** CHANGE them if your system supports long long or does not support long.
 */
 
-#if defined(LUA_USELONGLONG)
+#if defined(LUA_USELONGLONG) || (LUA_NUMBER_MODE >= 20)
 
 #define LUA_INTFRMLEN		"ll"
 #define LUA_INTFRM_T		long long
@@ -757,7 +832,10 @@ union luai_Cast { double l_d; long l_l; };
 ** without modifying the main part of the file.
 */
 
-
+/*
+@@ LUA_DISABLE_ASSERT disables the _assert() function.
+** Code inside the () of the _assert is ignored but must be () balanced.
+*/
 
 #endif
 

@@ -241,12 +241,16 @@ LUA_API void lua_pushvalue (lua_State *L, int idx) {
 
 LUA_API int lua_type (lua_State *L, int idx) {
   StkId o = index2adr(L, idx);
-  return (o == luaO_nilobject) ? LUA_TNONE : ttype(o);
+  /* Integers are reported as number, this is the outside API. */
+  return (o == luaO_nilobject) ? LUA_TNONE : ttype2(o);
 }
 
 
 LUA_API const char *lua_typename (lua_State *L, int t) {
   UNUSED(L);
+  /* The 't' type value is part of external interface, and thus does NOT
+   * ever-never contain LUA_TINT, so we need not prepare for that.
+   */
   return (t == LUA_TNONE) ? "no value" : luaT_typenames[t];
 }
 
@@ -261,6 +265,17 @@ LUA_API int lua_isnumber (lua_State *L, int idx) {
   TValue n;
   const TValue *o = index2adr(L, idx);
   return tonumber(o, &n);
+}
+
+
+LUA_API int lua_isinteger (lua_State *L, int idx) {
+  TValue n;
+  const TValue *o = index2adr(L, idx);
+#ifdef LUA_TINT
+  return tonumber(o, &n) && ttisinteger(o);
+#else
+  return tonumber(o, &n) && floor(nvalue(&n)) == nvalue(&n);
+#endif
 }
 
 
@@ -309,7 +324,9 @@ LUA_API int lua_lessthan (lua_State *L, int index1, int index2) {
 }
 
 
-
+/* Using 'lua_tonumber()' may incur accuracy lost, when running on float+int
+   arrangement. Use of 'lua_tointeger()' provides better accuracy (no casting).
+*/
 LUA_API lua_Number lua_tonumber (lua_State *L, int idx) {
   TValue n;
   const TValue *o = index2adr(L, idx);
@@ -325,7 +342,13 @@ LUA_API lua_Integer lua_tointeger (lua_State *L, int idx) {
   const TValue *o = index2adr(L, idx);
   if (tonumber(o, &n)) {
     lua_Integer res;
-    lua_Number num = nvalue(o);
+    lua_Number num;
+#ifdef LUA_TINT
+    if (ttisinteger(o)) return ivalue(o);
+    num = nvalue_fast(o);
+#else
+    num = nvalue(o);
+#endif
     lua_number2integer(res, num);
     return res;
   }
@@ -364,6 +387,9 @@ LUA_API size_t lua_objlen (lua_State *L, int idx) {
     case LUA_TSTRING: return tsvalue(o)->len;
     case LUA_TUSERDATA: return uvalue(o)->len;
     case LUA_TTABLE: return luaH_getn(hvalue(o));
+#ifdef LUA_TINT
+    case LUA_TINT:
+#endif
     case LUA_TNUMBER: {
       size_t l;
       lua_lock(L);  /* `luaV_tostring' may create a new string */
@@ -426,6 +452,9 @@ LUA_API void lua_pushnil (lua_State *L) {
 }
 
 
+/* Using 'lua_pushnumber()' may lose accuracy on pushing integers,
+ * in a float+int arrangement. 'lua_pushinteger' will not.
+ */
 LUA_API void lua_pushnumber (lua_State *L, lua_Number n) {
   lua_lock(L);
   setnvalue(L->top, n);
@@ -436,7 +465,7 @@ LUA_API void lua_pushnumber (lua_State *L, lua_Number n) {
 
 LUA_API void lua_pushinteger (lua_State *L, lua_Integer n) {
   lua_lock(L);
-  setnvalue(L->top, cast_num(n));
+  setivalue(L->top, n);
   api_incr_top(L);
   lua_unlock(L);
 }
@@ -598,7 +627,7 @@ LUA_API int lua_getmetatable (lua_State *L, int objindex) {
       mt = uvalue(obj)->metatable;
       break;
     default:
-      mt = G(L)->mt[ttype(obj)];
+      mt = G(L)->mt[ttype2(obj)];
       break;
   }
   if (mt == NULL)
@@ -721,7 +750,7 @@ LUA_API int lua_setmetatable (lua_State *L, int objindex) {
       break;
     }
     default: {
-      G(L)->mt[ttype(obj)] = mt;
+      G(L)->mt[ttype2(obj)] = mt;
       break;
     }
   }

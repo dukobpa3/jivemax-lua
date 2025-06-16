@@ -144,7 +144,7 @@ static int luaB_setfenv (lua_State *L) {
   luaL_checktype(L, 2, LUA_TTABLE);
   getfunc(L, 0);
   lua_pushvalue(L, 2);
-  if (lua_isnumber(L, 1) && lua_tonumber(L, 1) == 0) {
+  if (lua_isnumber(L, 1) && lua_tointeger(L, 1) == 0) {
     /* change environment of current thread */
     lua_pushthread(L);
     lua_insert(L, -2);
@@ -445,6 +445,7 @@ static int luaB_newproxy (lua_State *L) {
 
 
 static const luaL_Reg base_funcs[] = {
+  {"_assert", luaB_assert},
   {"assert", luaB_assert},
   {"collectgarbage", luaB_collectgarbage},
   {"dofile", luaB_dofile},

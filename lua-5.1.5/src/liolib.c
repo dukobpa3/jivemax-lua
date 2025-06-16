@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 
 #define liolib_c
 #define LUA_LIB
@@ -18,7 +19,7 @@
 #include "lauxlib.h"
 #include "lualib.h"
 
-
+#include "lobject.h"    /* luaO_str2i, luaO_str2d */
 
 #define IO_INPUT	1
 #define IO_OUTPUT	2
@@ -272,6 +273,53 @@ static int io_lines (lua_State *L) {
 
 static int read_number (lua_State *L, FILE *f) {
   lua_Number d;
+
+#ifdef LUA_TINT
+  /* Automatically use integer resolution if the data is integer, 
+   * without need for different application level marks ('n' for
+   * all numbers); we don't want applications to think integers
+   * are special from numbers in general. :)
+   * 
+   * Rewinding the file may prove a problem (not necessarily
+   * rewindable).
+   */
+  char buf[ LUAI_MAXNUMBER2STR ];   /* fits any number */
+  lua_Integer n;
+  int i=0;
+  char c=0;
+  
+  /* - skip any preceding white space
+   * - allow 0xAbcD format etc. (same as Lua parser does)
+   * - if integer, use integer setup, if float, use float
+   */
+  while( i<sizeof(buf)-1 ) {
+    c= fgetc(f);
+    if (c==EOF) break;  /* did we get some? */
+    if (i==0 && isspace(c)) continue;   /* skip white space at the beginning */
+    
+    if (i==1 && buf[0]=='0' && toupper(c)=='X')
+       c= 'x';
+    else if (i>2 && buf[1]=='x')
+        { if (!isxdigit(c)) break; }   /* end of hex string */
+    else
+        { if (!isdigit(c) && c!='.') break; }   /* TBD: how to handle dot here (should be same as 'fscanf()' does)? */
+
+    buf[i++]= c;
+  }
+  buf[i]= '\0';
+
+  if (c!=EOF) ungetc(c,f);     /* push ending character back */
+
+  if (luaO_str2i( buf, &n )) {
+    lua_pushinteger(L, n);
+    return 1;   /* integer read */
+  }
+  else if (luaO_str2d( buf, &d )) {
+    lua_pushnumber(L, d);
+    return 1;   /* FP number read */
+  }
+  else return 0;    /* read fails */
+#else
   if (fscanf(f, LUA_NUMBER_SCAN, &d) == 1) {
     lua_pushnumber(L, d);
     return 1;
@@ -280,6 +328,7 @@ static int read_number (lua_State *L, FILE *f) {
     lua_pushnil(L);  /* "result" to be removed */
     return 0;  /* read fails */
   }
+#endif
 }
 
 
@@ -415,9 +464,14 @@ static int g_write (lua_State *L, FILE *f, int arg) {
   int status = 1;
   for (; nargs--; arg++) {
     if (lua_type(L, arg) == LUA_TNUMBER) {
-      /* optimization: could be done exactly as for strings */
-      status = status &&
-          fprintf(f, LUA_NUMBER_FMT, lua_tonumber(L, arg)) > 0;
+          /* optimization: could be done exactly as for strings */
+      if (lua_isinteger(L,arg)) {
+          status = status &&
+              fprintf(f, LUA_INTEGER_FMT, LUA_INTEGER_FMT_CAST lua_tointeger(L, arg)) > 0;
+      } else {
+          status = status &&
+              fprintf(f, LUA_NUMBER_FMT, lua_tonumber(L, arg)) > 0;
+      }
     }
     else {
       size_t l;
@@ -477,6 +531,12 @@ static int f_flush (lua_State *L) {
 }
 
 
+static int io_fileno (lua_State *L) {
+  lua_pushinteger(L, fileno(tofile(L)));
+  return 1;
+}
+
+
 static const luaL_Reg iolib[] = {
   {"close", io_close},
   {"flush", io_flush},
@@ -501,6 +561,7 @@ static const luaL_Reg flib[] = {
   {"seek", f_seek},
   {"setvbuf", f_setvbuf},
   {"write", f_write},
+  {"fileno", io_fileno},
   {"__gc", io_gc},
   {"__tostring", io_tostring},
   {NULL, NULL}

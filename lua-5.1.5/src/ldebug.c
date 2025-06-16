@@ -566,7 +566,7 @@ static int isinstack (CallInfo *ci, const TValue *o) {
 
 void luaG_typeerror (lua_State *L, const TValue *o, const char *op) {
   const char *name = NULL;
-  const char *t = luaT_typenames[ttype(o)];
+  const char *t = luaT_typenames[ttype2(o)];
   const char *kind = (isinstack(L->ci, o)) ?
                          getobjname(L, L->ci, cast_int(o - L->base), &name) :
                          NULL;
@@ -592,10 +592,20 @@ void luaG_aritherror (lua_State *L, const TValue *p1, const TValue *p2) {
   luaG_typeerror(L, p2, "perform arithmetic on");
 }
 
+#if defined (LUA_BITWISE_OPERATORS)
+void luaG_logicerror (lua_State *L, const TValue *p1, const TValue *p2) {
+  TValue temp;
+  if (luaV_tonumber(p1, &temp) == NULL)
+    p2 = p1;  /* first operand is wrong */
+  luaG_typeerror(L, p2, "perform bitwise operation on");
+}
+#endif
+
+
 
 int luaG_ordererror (lua_State *L, const TValue *p1, const TValue *p2) {
-  const char *t1 = luaT_typenames[ttype(p1)];
-  const char *t2 = luaT_typenames[ttype(p2)];
+  const char *t1 = luaT_typenames[ttype2(p1)];
+  const char *t2 = luaT_typenames[ttype2(p2)];
   if (t1[2] == t2[2])
     luaG_runerror(L, "attempt to compare two %s values", t1);
   else

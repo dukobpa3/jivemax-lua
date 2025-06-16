@@ -7,15 +7,17 @@
 # Your platform. See PLATS for possible values.
 PLAT= none
 
+# commented out things exported by main mainfile
+
 CC ?= gcc
-CFLAGS ?= -O2 -Wall -fPIC $(MYCFLAGS)
+CFLAGS ?= -s -fPIC -O2 -Wall $(MYCFLAGS)
 AR ?= ar
 ARFLAGS ?= rcu
 RANLIB ?= ranlib
 RM= rm -f
 LIBS= -lm $(MYLIBS)
 
-MYCFLAGS=
+MYCFLAGS=-Wl,rpath,/opt/squeezeplay/lib
 MYLDFLAGS=
 MYLIBS=
 
@@ -52,17 +54,20 @@ o:	$(ALL_O)
 a:	$(ALL_A)
 
 $(LUA_A): $(CORE_O) $(LIB_O)
-	$(AR) $(ARFLAGS) $@ $?
+	$(AR) $(ARFLAGS) $@ $(CORE_O) $(LIB_O)
 	$(RANLIB) $@
 
 $(LUA_SO): $(CORE_O) $(LIB_O)
-	$(CC) -o $@ -shared $(CFLAGS) $(MYLDFLAGS) $(CORE_O) $(LIB_O) $(LIBS)
+	$(CC) -o $@ $(MYLDFLAGS) -shared $(CORE_O) $(LIB_O)
 
 $(LUA_T): $(LUA_O) $(LUA_A)
-	$(CC) -o $@ $(MYLDFLAGS) $(LUA_O) $(LUA_A) $(LIBS)
+	$(CC) -o $@ $(LDFLAGS) $(CFLAGS) $(MYLDFLAGS) $(LUA_O) $(LUA_A) $(LIBS)
 
 $(LUAC_T): $(LUAC_O) $(LUA_A)
-	$(CC) -o $@ $(MYLDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
+	$(CC) -o $@ $(LDFLAGS) $(CFLAGS) $(MYLDFLAGS) $(LUAC_O) $(LUA_A) $(LIBS)
+
+.c.o:
+	$(CC) $(CFLAGS) $(MYCFLAGS) -c -o $@ $<
 
 clean:
 	$(RM) $(ALL_T) $(ALL_O)
@@ -94,7 +99,7 @@ ansi:
 	$(MAKE) all MYCFLAGS=-DLUA_ANSI
 
 bsd:
-	$(MAKE) all MYCFLAGS="-DLUA_USE_POSIX -DLUA_USE_DLOPEN" MYLIBS="-Wl,-E"
+	$(MAKE) all MYCFLAGS="-DLUA_USE_POSIX -DLUA_USE_DLOPEN" MYLIBS=""
 
 freebsd:
 	$(MAKE) all MYCFLAGS="-DLUA_USE_LINUX" MYLIBS="-Wl,-E -lreadline"
@@ -103,11 +108,14 @@ generic:
 	$(MAKE) all MYCFLAGS=
 
 linux:
-	$(MAKE) all MYCFLAGS=-DLUA_USE_LINUX MYLIBS="-Wl,-E -ldl"
+	$(MAKE) all MYCFLAGS="-O2 -Wall -fpic -DLUA_USE_LINUX" MYLIBS="-ldl -lreadline -lhistory -lcurses" OSXPREFIX="pwd"
+
+squeezeos:
+	$(MAKE) all MYCFLAGS="-Os -Wall -fpic -DLUA_USE_POSIX -DLUA_USE_DLOPEN" MYLIBS="-ldl" OSXPREFIX="pwd"
 
 macosx:
 	$(MAKE) all MYCFLAGS=-DLUA_USE_LINUX MYLIBS="-lreadline"
-# use this on Mac OS X 10.3-
+# use this on Mac OS X 10.3
 #	$(MAKE) all MYCFLAGS=-DLUA_USE_MACOSX
 
 mingw:

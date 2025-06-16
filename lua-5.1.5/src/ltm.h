@@ -33,6 +33,15 @@ typedef enum {
   TM_LE,
   TM_CONCAT,
   TM_CALL,
+#if defined(LUA_BITWISE_OPERATORS)
+  TM_BOR,
+  TM_BAND,
+  TM_BXOR,
+  TM_BRSHFT,
+  TM_BLSHFT,
+  TM_BNOT,
+  TM_INTDIV,
+#endif
   TM_N		/* number of elements in the enum */
 } TMS;
 
@@ -44,7 +53,6 @@ typedef enum {
 #define fasttm(l,et,e)	gfasttm(G(l), et, e)
 
 LUAI_DATA const char *const luaT_typenames[];
-
 
 LUAI_FUNC const TValue *luaT_gettm (Table *events, TMS event, TString *ename);
 LUAI_FUNC const TValue *luaT_gettmbyobj (lua_State *L, const TValue *o,

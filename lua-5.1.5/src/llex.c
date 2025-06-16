@@ -39,7 +39,11 @@ const char *const luaX_tokens [] = {
     "end", "false", "for", "function", "if",
     "in", "local", "nil", "not", "or", "repeat",
     "return", "then", "true", "until", "while",
+#if defined(LUA_BITWISE_OPERATORS)
+    "..", "...", "==", ">=", ">>", "<=", "<<", "^^", "~=", "!="
+#else
     "..", "...", "==", ">=", "<=", "~=",
+#endif
     "<number>", "<name>", "<string>", "<eof>",
     NULL
 };
@@ -90,6 +94,9 @@ static const char *txtToken (LexState *ls, int token) {
   switch (token) {
     case TK_NAME:
     case TK_STRING:
+#ifdef LUA_TINT
+    case TK_INT:
+#endif
     case TK_NUMBER:
       save(ls, '\0');
       return luaZ_buffer(ls->buff);
@@ -191,7 +198,7 @@ static void trydecpoint (LexState *ls, SemInfo *seminfo) {
 
 
 /* LUA_NUMBER */
-static void read_numeral (LexState *ls, SemInfo *seminfo) {
+static int /*TK_NUMBER|TK_INT*/ read_numeral (LexState *ls, SemInfo *seminfo) {
   lua_assert(isdigit(ls->current));
   do {
     save_and_next(ls);
@@ -202,8 +209,19 @@ static void read_numeral (LexState *ls, SemInfo *seminfo) {
     save_and_next(ls);
   save(ls, '\0');
   buffreplace(ls, '.', ls->decpoint);  /* follow locale for decimal point */
+#ifdef LUA_TINT
+  /* AK 22-Jul-06:
+   * We read in, and store integers as such, already at the Lua bytecode level.
+   * THIS EFFECTIVELY BREAKS BYTECODE COMPATIBILITY WITH NON-PATCHED LUA
+   * (we can read in regular bytecode, but others won't read the integers).
+   */
+  /* Try first for integers, to avoid accuracy loss */
+  if (luaO_str2i(luaZ_buffer(ls->buff), &seminfo->i))
+    return TK_INT;
+#endif
   if (!luaO_str2d(luaZ_buffer(ls->buff), &seminfo->r))  /* format error? */
     trydecpoint(ls, seminfo); /* try to update decimal point separator */
+  return TK_NUMBER;
 }
 
 
@@ -373,6 +391,30 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         if (ls->current != '=') return '=';
         else { next(ls); return TK_EQ; }
       }
+#if defined(LUA_BITWISE_OPERATORS)
+      case '<': {
+        next(ls);
+        if (ls->current == '=') { next(ls); return TK_LE; }
+        else if (ls->current == '<') { next(ls); return TK_LSHFT; }
+        else  return '<';
+      }
+      case '>': {
+        next(ls);
+        if (ls->current == '=') { next(ls); return TK_GE; }
+        else if (ls->current == '>') { next(ls); return TK_RSHFT; }
+        else return '>';
+      }
+      case '^': {
+        next(ls);
+        if (ls->current != '^') return '^';
+        else { next(ls); return TK_XOR; }
+      }
+      case '!': {
+        next(ls);
+        if (ls->current != '=') return '!';
+        else { next(ls); return TK_NE; }
+      }
+#else
       case '<': {
         next(ls);
         if (ls->current != '=') return '<';
@@ -381,8 +423,9 @@ static int llex (LexState *ls, SemInfo *seminfo) {
       case '>': {
         next(ls);
         if (ls->current != '=') return '>';
-        else { next(ls); return TK_GE; }
+        else  { next(ls); return TK_GE; }
       }
+#endif
       case '~': {
         next(ls);
         if (ls->current != '=') return '~';
@@ -402,8 +445,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
         }
         else if (!isdigit(ls->current)) return '.';
         else {
-          read_numeral(ls, seminfo);
-          return TK_NUMBER;
+          return read_numeral(ls, seminfo);
         }
       }
       case EOZ: {
@@ -416,8 +458,7 @@ static int llex (LexState *ls, SemInfo *seminfo) {
           continue;
         }
         else if (isdigit(ls->current)) {
-          read_numeral(ls, seminfo);
-          return TK_NUMBER;
+          return read_numeral(ls, seminfo);
         }
         else if (isalpha(ls->current) || ls->current == '_') {
           /* identifier or reserved word */
@@ -444,6 +485,9 @@ static int llex (LexState *ls, SemInfo *seminfo) {
   }
 }
 
+#ifdef LUA_DISABLE_ASSERT
+#include "jive_assert.h"
+#endif
 
 void luaX_next (LexState *ls) {
   ls->lastline = ls->linenumber;
